@@ -1,5 +1,4 @@
 
-
 import streamlit as st
 import pandas as pd
 import pickle
@@ -8,13 +7,19 @@ import requests
 
 from sklearn.metrics.pairwise import cosine_similarity
 
-# ---------------- PAGE CONFIG ----------------
+# ==========================================
+# 1. PAGE CONFIGURATION
+# ==========================================
 
 st.set_page_config(
-    page_title="CineMatch",
+    page_title="CineMatch | Movie Recommender",
     page_icon="🎬",
     layout="wide"
 )
+
+# ==========================================
+# 2. CUSTOM CSS
+# ==========================================
 
 st.markdown("""
 <style>
@@ -22,101 +27,183 @@ st.markdown("""
     background-color: #101014;
     color: white;
 }
-.movie-title {
-    font-size: 18px;
-    font-weight: bold;
+
+.main-title {
+    font-size: 48px;
+    font-weight: 800;
+    color: white;
 }
-.movie-info {
+
+.subtitle {
+    font-size: 20px;
     color: #bbbbbb;
-    font-size: 14px;
+}
+
+.movie-card {
+    background-color: #1c1c24;
+    padding: 12px;
+    border-radius: 12px;
+    min-height: 100px;
+}
+
+.movie-name {
+    font-size: 17px;
+    font-weight: bold;
+    color: white;
+}
+
+.stButton > button {
+    border-radius: 10px;
+    font-weight: bold;
 }
 </style>
 """, unsafe_allow_html=True)
 
-# ---------------- TMDB API ----------------
 
-TMDB_TOKEN = st.secrets["TMDB_TOKEN"]
+# ==========================================
+# 3. TMDB API CONFIGURATION
+# ==========================================
+
+try:
+    TMDB_TOKEN = st.secrets["TMDB_TOKEN"]
+except Exception:
+    st.error(
+        "TMDB token not found. Check your .streamlit/secrets.toml file."
+    )
+    st.stop()
+
+if not TMDB_TOKEN.strip():
+    st.error("TMDB token is empty. Please add your API Read Access Token.")
+    st.stop()
+
+BASE_URL = "https://api.themoviedb.org/3"
+IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 
 HEADERS = {
     "accept": "application/json",
     "Authorization": f"Bearer {TMDB_TOKEN}"
 }
 
-BASE_URL = "https://api.themoviedb.org/3"
-IMAGE_URL = "https://image.tmdb.org/t/p/w500"
 
-@st.cache_data(ttl=3600)
+# ==========================================
+# 4. TMDB MOVIE SEARCH
+# ==========================================
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_movie_details(title):
 
     try:
         response = requests.get(
             f"{BASE_URL}/search/movie",
             headers=HEADERS,
-            params={"query": title},
-            timeout=15
+            params={
+                "query": title,
+                "include_adult": False
+            },
+            timeout=20
         )
 
-        response.raise_for_status()
+        if response.status_code != 200:
+            return {
+                "error": f"TMDB API returned status {response.status_code}"
+            }
+
         results = response.json().get("results", [])
 
-        if results:
-            return results[0]
+        if not results:
+            return None
 
-    except requests.RequestException:
-        return None
+        # Prefer exact title match
+        for movie in results:
+            if movie.get("title", "").casefold() == title.casefold():
+                return movie
 
-    return None
+        # Otherwise return the first search result
+        return results[0]
+
+    except requests.RequestException as error:
+        return {"error": str(error)}
 
 
-# ---------------- LOAD MODEL ----------------
+# ==========================================
+# 5. LOAD TRAINED MODEL
+# ==========================================
 
 @st.cache_resource
 def load_data():
 
-    with open("models/df.pkl", "rb") as f:
-        df = pickle.load(f)
+    with open("models/df.pkl", "rb") as file:
+        df = pickle.load(file)
 
-    with open("models/tfidf_matrix.pkl", "rb") as f:
-        tfidf_matrix = pickle.load(f)
+    with open("models/tfidf_matrix.pkl", "rb") as file:
+        tfidf_matrix = pickle.load(file)
 
-    with open("models/indices.pkl", "rb") as f:
-        indices = pickle.load(f)
+    with open("models/indices.pkl", "rb") as file:
+        indices = pickle.load(file)
 
     return df, tfidf_matrix, indices
 
 
-df, tfidf_matrix, indices = load_data()
+try:
+    df, tfidf_matrix, indices = load_data()
+
+except Exception as error:
+    st.error(f"Unable to load model files: {error}")
+    st.stop()
 
 
-# ---------------- RECOMMENDATION ----------------
+# ==========================================
+# 6. RECOMMENDATION FUNCTION
+# ==========================================
 
 def recommend(title, n=10):
 
     if title not in indices:
         return df.iloc[0:0]
 
-    idx = indices[title]
+    idx = int(indices[title])
 
-    similarity = cosine_similarity(
+    similarity_scores = cosine_similarity(
         tfidf_matrix[idx],
         tfidf_matrix
     ).flatten()
 
-    similar_indices = np.argsort(similarity)[::-1]
+    sorted_indices = np.argsort(similarity_scores)[::-1]
 
-    similar_indices = [
-        i for i in similar_indices if i != idx
+    recommended_indices = [
+        i for i in sorted_indices if i != idx
     ][:n]
 
-    return df.iloc[similar_indices]
+    return df.iloc[recommended_indices]
 
 
-# ---------------- HEADER ----------------
+# ==========================================
+# 7. POSTER DISPLAY FUNCTION
+# ==========================================
 
-st.title("🎬 CineMatch")
+def display_poster(movie):
+
+    poster_path = movie.get("poster_path")
+
+    if poster_path:
+        poster_url = IMAGE_URL + poster_path
+        st.image(poster_url, use_container_width=True)
+    else:
+        st.info("Poster unavailable")
+
+
+# ==========================================
+# 8. HEADER
+# ==========================================
 
 st.markdown(
-    "### Discover your next favourite movie"
+    '<div class="main-title">🎬 CineMatch</div>',
+    unsafe_allow_html=True
+)
+
+st.markdown(
+    '<div class="subtitle">Discover your next favourite movie</div>',
+    unsafe_allow_html=True
 )
 
 st.write(
@@ -126,7 +213,9 @@ st.write(
 st.divider()
 
 
-# ---------------- MOVIE SEARCH ----------------
+# ==========================================
+# 9. MOVIE SELECTION
+# ==========================================
 
 movie_list = sorted(
     df["title"].dropna().astype(str).unique()
@@ -137,12 +226,14 @@ selected_movie = st.selectbox(
     movie_list
 )
 
-if st.button("Find Similar Movies", type="primary"):
+if st.button("🎬 Find Similar Movies", type="primary"):
 
     st.session_state["selected_movie"] = selected_movie
 
 
-# ---------------- DISPLAY RESULTS ----------------
+# ==========================================
+# 10. DISPLAY SELECTED MOVIE
+# ==========================================
 
 if "selected_movie" in st.session_state:
 
@@ -152,42 +243,51 @@ if "selected_movie" in st.session_state:
 
     st.header(f"🎥 {selected_movie}")
 
-    details = get_movie_details(selected_movie)
+    with st.spinner("Fetching movie details from TMDB..."):
 
-    if details:
+        movie_details = get_movie_details(selected_movie)
+
+    if movie_details and "error" in movie_details:
+
+        st.error(movie_details["error"])
+        st.info(
+            "Check your API Read Access Token and internet connection."
+        )
+
+    elif movie_details:
 
         col1, col2 = st.columns([1, 3])
 
         with col1:
-
-            poster = details.get("poster_path")
-
-            if poster:
-                st.image(IMAGE_URL + poster)
-            else:
-                st.info("Poster unavailable")
+            display_poster(movie_details)
 
         with col2:
 
-            rating = details.get("vote_average", 0)
-            release = details.get("release_date", "Unknown")
+            rating = movie_details.get("vote_average", 0)
+            release_date = movie_details.get("release_date") or "Unknown"
 
-            st.markdown(f"⭐ **Rating:** {rating}/10")
-            st.markdown(f"📅 **Release Date:** {release}")
+            st.subheader(movie_details.get("title", selected_movie))
+
+            st.markdown(f"⭐ **Rating:** {rating:.1f}/10")
+            st.markdown(f"📅 **Release Date:** {release_date}")
 
             st.markdown("### Overview")
 
             st.write(
-                details.get(
-                    "overview",
-                    "Overview unavailable."
-                )
+                movie_details.get("overview")
+                or "Overview unavailable."
             )
 
     else:
+
         st.warning(
-            "TMDB details unavailable for this movie. Showing recommendations anyway."
+            "Movie not found on TMDB. Recommendations will still be shown."
         )
+
+
+    # ======================================
+    # 11. RECOMMENDED MOVIES
+    # ======================================
 
     st.divider()
 
@@ -195,53 +295,66 @@ if "selected_movie" in st.session_state:
 
     recommendations = recommend(selected_movie, 10)
 
-    columns = st.columns(5)
+    if recommendations.empty:
 
-    for i, (_, movie) in enumerate(
-        recommendations.iterrows()
-    ):
+        st.warning("No recommendations found.")
 
-        movie_details = get_movie_details(
-            str(movie["title"])
-        )
+    else:
 
-        with columns[i % 5]:
+        for start in range(0, len(recommendations), 5):
 
-            if movie_details:
+            movie_columns = st.columns(5)
 
-                poster = movie_details.get("poster_path")
+            batch = recommendations.iloc[start:start + 5]
 
-                if poster:
-                    st.image(
-                        IMAGE_URL + poster,
-                        use_container_width=True
-                    )
-                else:
-                    st.info("Poster unavailable")
+            for column, (_, movie) in zip(movie_columns, batch.iterrows()):
 
-                st.markdown(
-                    f"**{movie_details.get('title', movie['title'])}**"
-                )
+                title = str(movie["title"])
 
-                rating = movie_details.get("vote_average", 0)
+                with column:
 
-                release = movie_details.get(
-                    "release_date", "Unknown"
-                )
+                    with st.spinner(f"Loading {title}..."):
 
-                st.caption(f"⭐ {rating:.1f}/10")
+                        details = get_movie_details(title)
 
-                if release:
-                    st.caption(f"📅 {release[:4]}")
+                    if details and "error" in details:
 
-            else:
+                        st.caption(title)
+                        st.caption("TMDB unavailable")
 
-                st.markdown(f"**{movie['title']}**")
-                st.caption("TMDB details unavailable")
+                    elif details:
+
+                        display_poster(details)
+
+                        st.markdown(
+                            f"**{details.get('title', title)}**"
+                        )
+
+                        rating = details.get("vote_average", 0)
+                        release = details.get("release_date") or "Unknown"
+
+                        st.caption(f"⭐ {rating:.1f}/10")
+                        st.caption(f"📅 {release[:4]}")
+
+                    else:
+
+                        st.markdown(f"**{title}**")
+                        st.caption("Poster unavailable")
+
+
+# ==========================================
+# 12. FOOTER
+# ==========================================
 
 st.divider()
 
 st.caption(
-    "Movie data and images provided by TMDB. "
     "This product uses the TMDB API but is not endorsed or certified by TMDB."
 )
+
+st.caption(
+    "CineMatch | Movie Recommendation System using NLP and Machine Learning"
+)
+
+
+
